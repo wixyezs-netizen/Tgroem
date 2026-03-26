@@ -1,10 +1,12 @@
+import random
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 
 from config import (
-    PREMIUM_PRICES, STARS_PRICES, SUPPORT_USERNAME, ADMIN_ID
+    PREMIUM_PRICES, STARS_PRICES, SUPPORT_USERNAME,
+    ADMIN_ID, YOOMONEY_WALLET,
 )
 from keyboards import (
     main_menu_keyboard, premium_keyboard, stars_keyboard,
@@ -12,11 +14,10 @@ from keyboards import (
 )
 from database import (
     add_user, create_order, complete_order,
-    get_user_orders, get_stats, get_order_by_label,
+    get_user_orders, get_stats,
 )
 from yoomoney_payment import (
-    generate_payment_label, create_payment_url,
-    check_payment_by_label, get_balance,
+    generate_payment_label, check_recent_deposits, get_balance,
 )
 
 router = Router()
@@ -49,10 +50,8 @@ PREMIUM_TEXT = """
 📌 <b>6 месяцев</b> — <s>{old6}</s> → <b>{p6}</b>
 📌 <b>12 месяцев</b> — <s>{old12}</s> → <b>{p12}</b>
 
-✅ Активация в течение нескольких минут
+✅ Активация за несколько минут
 ⚡ Потребуется ваш @username
-
-<i>Выберите тариф:</i>
 """.format(
     old3=PREMIUM_PRICES["premium_3"]["old_price"],
     p3=PREMIUM_PRICES["premium_3"]["display"],
@@ -73,10 +72,7 @@ STARS_TEXT = """
 💫 <b>500 Stars</b> — <s>{old500}</s> → <b>{s500}</b>
 💫 <b>1000 Stars</b> — <s>{old1000}</s> → <b>{s1000}</b>
 
-✅ Начисление в течение нескольких минут
-⚡ Stars зачисляются на ваш аккаунт
-
-<i>Выберите количество:</i>
+✅ Начисление за несколько минут
 """.format(
     old50=STARS_PRICES["stars_50"]["old_price"],
     s50=STARS_PRICES["stars_50"]["display"],
@@ -97,19 +93,16 @@ INFO_TEXT = f"""
 
 📌 <b>Как это работает:</b>
 1️⃣ Выберите товар
-2️⃣ Нажмите «💳 Оплатить» — откроется страница ЮMoney
-3️⃣ Оплатите картой или кошельком
-4️⃣ Вернитесь в бот и нажмите «🔄 Проверить оплату»
-5️⃣ Получите товар в течение нескольких минут!
+2️⃣ Переведите точную сумму на ЮMoney кошелёк
+3️⃣ <b>Обязательно укажите комментарий</b> (код заказа)
+4️⃣ Нажмите «🔄 Проверить оплату»
+5️⃣ Получите товар за несколько минут!
 
 🔒 <b>Гарантии:</b>
 • Безопасная оплата через ЮMoney
-• Если товар не доставлен — полный возврат
 • Поддержка 24/7
 
 💬 <b>Поддержка:</b> {SUPPORT_USERNAME}
-
-⚠️ Убедитесь, что у вас установлен @username перед покупкой Premium.
 """
 
 
@@ -123,10 +116,28 @@ def get_product_info(product_key: str) -> dict | None:
     return None
 
 
-# ==================== Хранилище label -> order_id ====================
-# (в памяти, для быстрого доступа при проверке)
+# Хранилище заказов в памяти
 pending_payments: dict[int, dict] = {}
-# order_id -> {"label": str, "product_key": str, "user_id": int}
+# order_id -> {"label": str, "product_key": str, "user_id": int, "unique_amount": float}
+
+# Множество уже использованных уникальных сумм (чтобы не совпадали)
+used_amounts: set[float] = set()
+
+
+def make_unique_amount(base_price: int) -> float:
+    """
+    Генерируем уникальную сумму: базовая цена + случайные копейки.
+    Это позволяет отличить один платёж от другого.
+    """
+    for _ in range(100):
+        kopecks = random.randint(1, 99)
+        unique = base_price + kopecks / 100.0
+        unique = round(unique, 2)
+        if unique not in used_amounts:
+            used_amounts.add(unique)
+            return unique
+    # Фоллбэк
+    return float(base_price)
 
 
 # ==================== ХЭНДЛЕРЫ ====================
@@ -223,10 +234,13 @@ async def buy_product(callback: CallbackQuery):
         await callback.answer("❌ Товар не найден", show_alert=True)
         return
 
-    # Генерируем уникальную метку
+    # Генерируем уникальную сумму
+    unique_amount = make_unique_amount(product["price"])
+
+    # Генерируем метку
     label = generate_payment_label()
 
-    # Создаём заказ в БД
+    # Создаём заказ
     order_id = await create_order(
         user_id=callback.from_user.id,
         product_type=product["type"],
@@ -240,37 +254,50 @@ async def buy_product(callback: CallbackQuery):
         "label": label,
         "product_key": product_key,
         "user_id": callback.from_user.id,
+        "unique_amount": unique_amount,
     }
 
-    # Создаём ссылку на оплату
-    payment_url = create_payment_url(
-        amount=product["price"],
-        label=label,
-        product_name=f"Заказ #{order_id} — {product['label']}",
-    )
+    # Ссылка на перевод
+    payment_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}/{unique_amount}"
 
     if product["type"] == "premium":
         desc = f"👑 {product['label']}\n⏱ Период: {product['months']} мес."
     else:
         desc = f"⭐ {product['label']}\n🌟 Количество: {product['amount']} Stars"
 
+    old_p = product['old_price'].replace(' ', '').replace('₽', '').replace(',', '')
+    try:
+        saving = int(old_p) - product['price']
+    except ValueError:
+        saving = 0
+
     text = f"""
 🛒 <b>Заказ #{order_id}</b>
 
 {desc}
 
-💰 <b>К оплате:</b> {product['display']}
+💰 <b>К оплате: {unique_amount} ₽</b>
 <s>Старая цена: {product['old_price']}</s>
-🔥 <b>Вы экономите {int(int(product['old_price'].replace(' ', '').replace('₽', '').replace(',', '')) - product['price'])} ₽!</b>
+🔥 <b>Вы экономите ~{saving} ₽!</b>
 
-━━━━━━━━━━━━━━━━━━━
-📌 <b>Инструкция:</b>
-1. Нажмите «💳 Оплатить»
-2. Оплатите на странице ЮMoney
-3. Вернитесь сюда и нажмите «🔄 Проверить оплату»
-━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
+📌 <b>Инструкция по оплате:</b>
 
-⚠️ Ссылка действительна 30 минут.
+1️⃣ Нажмите «💳 Оплатить»
+2️⃣ Переведите <b>ровно {unique_amount} ₽</b>
+   на кошелёк ЮMoney
+3️⃣ Вернитесь сюда
+4️⃣ Нажмите «🔄 Проверить оплату»
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💳 <b>Кошелёк:</b> <code>{YOOMONEY_WALLET}</code>
+💵 <b>Сумма:</b> <code>{unique_amount}</code> ₽
+
+⚠️ <b>ВАЖНО:</b> переводите <b>точную сумму</b>
+{unique_amount} ₽ — иначе платёж не будет найден!
+
+⏳ Заказ действителен 30 минут.
 """
 
     await callback.message.edit_text(
@@ -287,15 +314,13 @@ async def buy_product(callback: CallbackQuery):
 async def check_payment(callback: CallbackQuery, bot: Bot):
     order_id = int(callback.data.replace("check_", ""))
 
-    # Ищем в памяти или в БД
+    # Ищем заказ
     if order_id in pending_payments:
-        label = pending_payments[order_id]["label"]
-        product_key = pending_payments[order_id]["product_key"]
-        user_id = pending_payments[order_id]["user_id"]
+        data = pending_payments[order_id]
+        label = data["label"]
+        product_key = data["product_key"]
+        unique_amount = data["unique_amount"]
     else:
-        # Пробуем из БД
-        from database import get_order_by_label as _  # уже импортирован
-        # Ищем по order_id
         import aiosqlite
         async with aiosqlite.connect("bot_database.db") as db:
             db.row_factory = aiosqlite.Row
@@ -307,57 +332,53 @@ async def check_payment(callback: CallbackQuery, bot: Bot):
         if not order:
             await callback.answer("❌ Заказ не найден", show_alert=True)
             return
-
         if order["status"] == "paid":
             await callback.answer("✅ Этот заказ уже оплачен!", show_alert=True)
             return
 
         label = order["payment_label"]
         product_key = order["product_key"]
-        user_id = order["user_id"]
+        unique_amount = float(order["amount_rub"])
 
-    # Проверяем оплату через API ЮMoney
-    is_paid = await check_payment_by_label(label)
+    # Проверяем через API
+    is_paid = await check_recent_deposits(
+        expected_amount=unique_amount,
+        comment=label,
+    )
 
     if is_paid:
-        # Обновляем статус заказа
         await complete_order(order_id)
-
-        # Удаляем из памяти
         pending_payments.pop(order_id, None)
+        used_amounts.discard(unique_amount)
 
         product = get_product_info(product_key)
         product_name = product["label"] if product else "Товар"
         product_type = product["type"] if product else "unknown"
 
         if product_type == "premium":
-            delivery_text = (
-                "👑 <b>Telegram Premium</b> будет активирован на вашем аккаунте"
-            )
+            delivery_text = "👑 <b>Telegram Premium</b> будет активирован на вашем аккаунте"
         else:
-            delivery_text = (
-                "⭐ <b>Telegram Stars</b> будут начислены на ваш аккаунт"
-            )
+            delivery_text = "⭐ <b>Telegram Stars</b> будут начислены на ваш аккаунт"
 
         success_text = f"""
 ✅ <b>Оплата подтверждена!</b>
 
 🧾 <b>Заказ:</b> #{order_id}
 📦 <b>Товар:</b> {product_name}
-💰 <b>Сумма:</b> {product['price']} ₽
+💰 <b>Сумма:</b> {unique_amount} ₽
 
-━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
 
 {delivery_text} <b>в течение нескольких минут.</b>
 
 ⏳ Обычно это занимает от 1 до 15 минут.
 
-⚠️ <b>Если в течение 30 минут вы не получили товар, 
+⚠️ <b>Если в течение 30 минут вы не получили товар,
 напишите в поддержку:</b> {SUPPORT_USERNAME}
 
 📎 <i>Укажите номер заказа #{order_id}</i>
 
-━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
 
 Спасибо за покупку! 💜
 """
@@ -375,12 +396,10 @@ async def check_payment(callback: CallbackQuery, bot: Bot):
 🔔 <b>Новая оплата!</b>
 
 🧾 <b>Заказ:</b> #{order_id}
-👤 <b>Покупатель:</b> {callback.from_user.full_name} \
-(@{callback.from_user.username or 'нет'})
+👤 <b>Покупатель:</b> {callback.from_user.full_name} (@{callback.from_user.username or 'нет'})
 🆔 <b>ID:</b> <code>{callback.from_user.id}</code>
 📦 <b>Товар:</b> {product_name}
-💰 <b>Сумма:</b> {product['price']} ₽
-🏷 <b>Label:</b> <code>{label}</code>
+💰 <b>Сумма:</b> {unique_amount} ₽
 """
             try:
                 await bot.send_message(
@@ -388,12 +407,12 @@ async def check_payment(callback: CallbackQuery, bot: Bot):
                 )
             except Exception:
                 pass
-
     else:
         await callback.answer(
             "⏳ Оплата пока не найдена.\n\n"
-            "Если вы уже оплатили, подождите 1-2 минуты и попробуйте снова.\n"
-            "Иногда обработка платежа занимает некоторое время.",
+            "Если вы уже оплатили — подождите\n"
+            "1-2 минуты и нажмите проверку снова.\n\n"
+            f"Убедитесь что перевели ровно {unique_amount} ₽",
             show_alert=True,
         )
 
@@ -416,6 +435,7 @@ async def cmd_stats(message: Message):
 🧾 <b>Оплаченных заказов:</b> {paid_orders}
 💰 <b>Общая выручка:</b> {total_revenue} ₽
 💳 <b>Баланс ЮMoney:</b> {balance}
+⏳ <b>Ожидающих оплаты:</b> {len(pending_payments)}
 """,
         parse_mode=ParseMode.HTML,
     )
@@ -430,8 +450,7 @@ async def cmd_admin(message: Message):
         """
 🔧 <b>Админ-панель</b>
 
-Доступные команды:
-/stats — Статистика
+/stats — Статистика и баланс
 /admin — Это меню
 """,
         parse_mode=ParseMode.HTML,
