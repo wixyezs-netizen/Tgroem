@@ -6,17 +6,24 @@ from config import PREMIUM_PRICES, STARS_PRICES, SUPPORT_USERNAME
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="👑 Telegram Premium", callback_data="category_premium")
+        InlineKeyboardButton(
+            text="👑 Telegram Premium", callback_data="category_premium"
+        )
     )
     builder.row(
-        InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="category_stars")
+        InlineKeyboardButton(
+            text="⭐ Telegram Stars", callback_data="category_stars"
+        )
     )
     builder.row(
         InlineKeyboardButton(text="📋 Мои заказы", callback_data="my_orders")
     )
     builder.row(
         InlineKeyboardButton(text="ℹ️ Информация", callback_data="info"),
-        InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}")
+        InlineKeyboardButton(
+            text="💬 Поддержка",
+            url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}",
+        ),
     )
     return builder.as_markup()
 
@@ -26,13 +33,11 @@ def premium_keyboard() -> InlineKeyboardMarkup:
     for key, data in PREMIUM_PRICES.items():
         builder.row(
             InlineKeyboardButton(
-                text=f"{data['label']} — {data['display']}",
-                callback_data=f"buy_{key}"
+                text=f"{data['label']} — {data['display']} (было {data['old_price']})",
+                callback_data=f"buy_{key}",
             )
         )
-    builder.row(
-        InlineKeyboardButton(text="🔙 Назад", callback_data="back_main")
-    )
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
     return builder.as_markup()
 
 
@@ -41,23 +46,26 @@ def stars_keyboard() -> InlineKeyboardMarkup:
     for key, data in STARS_PRICES.items():
         builder.row(
             InlineKeyboardButton(
-                text=f"{data['label']} — {data['display']}",
-                callback_data=f"buy_{key}"
+                text=f"{data['label']} — {data['display']} (было {data['old_price']})",
+                callback_data=f"buy_{key}",
             )
         )
-    builder.row(
-        InlineKeyboardButton(text="🔙 Назад", callback_data="back_main")
-    )
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
     return builder.as_markup()
 
 
-def confirm_keyboard(product_key: str) -> InlineKeyboardMarkup:
+def payment_keyboard(payment_url: str, order_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="💳 Оплатить", callback_data=f"pay_{product_key}")
+        InlineKeyboardButton(text="💳 Оплатить", url=payment_url)
     )
     builder.row(
-        InlineKeyboardButton(text="🔙 Назад", callback_data="back_main")
+        InlineKeyboardButton(
+            text="🔄 Проверить оплату", callback_data=f"check_{order_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")
     )
     return builder.as_markup()
 
@@ -67,7 +75,7 @@ def after_payment_keyboard() -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(
             text="💬 Поддержка",
-            url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}"
+            url=f"https://t.me/{SUPPORT_USERNAME.replace('@', '')}",
         )
     )
     builder.row(
@@ -78,7 +86,5 @@ def after_payment_keyboard() -> InlineKeyboardMarkup:
 
 def back_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🔙 Назад", callback_data="back_main")
-    )
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
     return builder.as_markup()
