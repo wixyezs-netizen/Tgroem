@@ -1,20 +1,23 @@
 from aiogram import Router, F, Bot
-from aiogram.types import (
-    Message, CallbackQuery, LabeledPrice,
-    PreCheckoutQuery, ContentType
-)
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.enums import ParseMode
 
 from config import (
-    PREMIUM_PRICES, STARS_PRICES,
-    PAYMENT_PROVIDER_TOKEN, SUPPORT_USERNAME, ADMIN_ID
+    PREMIUM_PRICES, STARS_PRICES, SUPPORT_USERNAME, ADMIN_ID
 )
 from keyboards import (
     main_menu_keyboard, premium_keyboard, stars_keyboard,
-    confirm_keyboard, after_payment_keyboard, back_keyboard
+    payment_keyboard, after_payment_keyboard, back_keyboard,
 )
-from database import add_user, create_order, complete_order, get_user_orders, get_stats
+from database import (
+    add_user, create_order, complete_order,
+    get_user_orders, get_stats, get_order_by_label,
+)
+from yoomoney_payment import (
+    generate_payment_label, create_payment_url,
+    check_payment_by_label, get_balance,
+)
 
 router = Router()
 
@@ -25,20 +28,13 @@ WELCOME_TEXT = """
 
 Здесь вы можете приобрести:
 
-👑 <b>Telegram Premium</b> — разблокируйте все возможности Telegram!
-• Увеличенные лимиты
-• Уникальные стикеры и эмодзи
-• Быстрая загрузка файлов
-• Отсутствие рекламы
-• И многое другое!
-
+👑 <b>Telegram Premium</b> — все возможности Telegram!
 ⭐ <b>Telegram Stars</b> — внутренняя валюта Telegram!
-• Поддерживайте авторов
-• Покупайте цифровые товары
-• Разблокируйте платный контент
 
-✅ Моментальная доставка
-🔒 Безопасная оплата
+🔥 <b>СКИДКА 35% на всё!</b> 🔥
+
+✅ Активация за несколько минут
+🔒 Безопасная оплата через ЮMoney
 💬 Поддержка 24/7
 
 <i>Выберите категорию:</i>
@@ -47,65 +43,77 @@ WELCOME_TEXT = """
 PREMIUM_TEXT = """
 👑 <b>Telegram Premium</b>
 
-Выберите период подписки:
+🔥 <b>Скидка 35%!</b>
 
-📌 <b>3 месяца</b> — {p3}
-📌 <b>6 месяцев</b> — {p6} <i>(выгоднее!)</i>
-📌 <b>12 месяцев</b> — {p12} <i>(максимальная выгода!)</i>
+📌 <b>3 месяца</b> — <s>{old3}</s> → <b>{p3}</b>
+📌 <b>6 месяцев</b> — <s>{old6}</s> → <b>{p6}</b>
+📌 <b>12 месяцев</b> — <s>{old12}</s> → <b>{p12}</b>
 
-✅ Активация в течение нескольких минут после оплаты
-⚡ Для активации потребуется ваш @username
+✅ Активация в течение нескольких минут
+⚡ Потребуется ваш @username
 
 <i>Выберите тариф:</i>
 """.format(
+    old3=PREMIUM_PRICES["premium_3"]["old_price"],
     p3=PREMIUM_PRICES["premium_3"]["display"],
+    old6=PREMIUM_PRICES["premium_6"]["old_price"],
     p6=PREMIUM_PRICES["premium_6"]["display"],
-    p12=PREMIUM_PRICES["premium_12"]["display"]
+    old12=PREMIUM_PRICES["premium_12"]["old_price"],
+    p12=PREMIUM_PRICES["premium_12"]["display"],
 )
 
 STARS_TEXT = """
 ⭐ <b>Telegram Stars</b>
 
-Выберите количество звёзд:
+🔥 <b>Скидка 35%!</b>
 
-💫 <b>50 Stars</b> — {s50}
-💫 <b>100 Stars</b> — {s100}
-💫 <b>250 Stars</b> — {s250}
-💫 <b>500 Stars</b> — {s500}
-💫 <b>1000 Stars</b> — {s1000}
+💫 <b>50 Stars</b> — <s>{old50}</s> → <b>{s50}</b>
+💫 <b>100 Stars</b> — <s>{old100}</s> → <b>{s100}</b>
+💫 <b>250 Stars</b> — <s>{old250}</s> → <b>{s250}</b>
+💫 <b>500 Stars</b> — <s>{old500}</s> → <b>{s500}</b>
+💫 <b>1000 Stars</b> — <s>{old1000}</s> → <b>{s1000}</b>
 
-✅ Начисление в течение нескольких минут после оплаты
-⚡ Stars начисляются на ваш аккаунт Telegram
+✅ Начисление в течение нескольких минут
+⚡ Stars зачисляются на ваш аккаунт
 
 <i>Выберите количество:</i>
 """.format(
+    old50=STARS_PRICES["stars_50"]["old_price"],
     s50=STARS_PRICES["stars_50"]["display"],
+    old100=STARS_PRICES["stars_100"]["old_price"],
     s100=STARS_PRICES["stars_100"]["display"],
+    old250=STARS_PRICES["stars_250"]["old_price"],
     s250=STARS_PRICES["stars_250"]["display"],
+    old500=STARS_PRICES["stars_500"]["old_price"],
     s500=STARS_PRICES["stars_500"]["display"],
-    s1000=STARS_PRICES["stars_1000"]["display"]
+    old1000=STARS_PRICES["stars_1000"]["old_price"],
+    s1000=STARS_PRICES["stars_1000"]["display"],
 )
 
 INFO_TEXT = f"""
 ℹ️ <b>Информация о сервисе</b>
 
-🏪 <b>Premium Shop</b> — надёжный магазин Telegram Premium и Stars
+🏪 <b>Premium Shop</b> — магазин Telegram Premium и Stars
 
 📌 <b>Как это работает:</b>
 1️⃣ Выберите товар
-2️⃣ Оплатите удобным способом
-3️⃣ Получите в течение нескольких минут!
+2️⃣ Нажмите «💳 Оплатить» — откроется страница ЮMoney
+3️⃣ Оплатите картой или кошельком
+4️⃣ Вернитесь в бот и нажмите «🔄 Проверить оплату»
+5️⃣ Получите товар в течение нескольких минут!
 
 🔒 <b>Гарантии:</b>
-• Безопасная оплата через платёжную систему
+• Безопасная оплата через ЮMoney
 • Если товар не доставлен — полный возврат
 • Поддержка 24/7
 
 💬 <b>Поддержка:</b> {SUPPORT_USERNAME}
 
-⚠️ <b>Важно:</b> Убедитесь, что у вас установлен @username в настройках Telegram перед покупкой Premium.
+⚠️ Убедитесь, что у вас установлен @username перед покупкой Premium.
 """
 
+
+# ==================== УТИЛИТЫ ====================
 
 def get_product_info(product_key: str) -> dict | None:
     if product_key in PREMIUM_PRICES:
@@ -115,50 +123,25 @@ def get_product_info(product_key: str) -> dict | None:
     return None
 
 
-def get_confirm_text(product_key: str) -> str:
-    product = get_product_info(product_key)
-    if not product:
-        return "Товар не найден"
-
-    if product["type"] == "premium":
-        return f"""
-🛒 <b>Подтверждение заказа</b>
-
-📦 <b>Товар:</b> {product['label']}
-⏱ <b>Период:</b> {product['months']} мес.
-💰 <b>Стоимость:</b> {product['display']}
-
-👤 <b>Аккаунт:</b> Ваш текущий Telegram аккаунт
-
-⚠️ <b>После оплаты Premium будет активирован в течение нескольких минут.</b>
-
-Нажмите «💳 Оплатить» для продолжения:
-"""
-    else:
-        return f"""
-🛒 <b>Подтверждение заказа</b>
-
-📦 <b>Товар:</b> {product['label']}
-🌟 <b>Количество:</b> {product['amount']} Stars
-💰 <b>Стоимость:</b> {product['display']}
-
-👤 <b>Аккаунт:</b> Ваш текущий Telegram аккаунт
-
-⚠️ <b>После оплаты Stars будут начислены в течение нескольких минут.</b>
-
-Нажмите «💳 Оплатить» для продолжения:
-"""
+# ==================== Хранилище label -> order_id ====================
+# (в памяти, для быстрого доступа при проверке)
+pending_payments: dict[int, dict] = {}
+# order_id -> {"label": str, "product_key": str, "user_id": int}
 
 
 # ==================== ХЭНДЛЕРЫ ====================
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    await add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    await add_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name,
+    )
     await message.answer(
         WELCOME_TEXT,
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_keyboard()
+        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -167,7 +150,7 @@ async def back_to_main(callback: CallbackQuery):
     await callback.message.edit_text(
         WELCOME_TEXT,
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_keyboard()
+        reply_markup=main_menu_keyboard(),
     )
     await callback.answer()
 
@@ -177,7 +160,7 @@ async def show_premium(callback: CallbackQuery):
     await callback.message.edit_text(
         PREMIUM_TEXT,
         parse_mode=ParseMode.HTML,
-        reply_markup=premium_keyboard()
+        reply_markup=premium_keyboard(),
     )
     await callback.answer()
 
@@ -187,7 +170,7 @@ async def show_stars(callback: CallbackQuery):
     await callback.message.edit_text(
         STARS_TEXT,
         parse_mode=ParseMode.HTML,
-        reply_markup=stars_keyboard()
+        reply_markup=stars_keyboard(),
     )
     await callback.answer()
 
@@ -197,7 +180,7 @@ async def show_info(callback: CallbackQuery):
     await callback.message.edit_text(
         INFO_TEXT,
         parse_mode=ParseMode.HTML,
-        reply_markup=back_keyboard()
+        reply_markup=back_keyboard(),
     )
     await callback.answer()
 
@@ -216,15 +199,15 @@ async def show_orders(callback: CallbackQuery):
             product_name = product["label"] if product else order["product_key"]
             text += (
                 f"{status_emoji} <b>#{order['order_id']}</b> — {product_name}\n"
-                f"   💰 {order['amount_rub'] / 100:.0f} ₽ | "
-                f"{'Оплачен' if order['status'] == 'paid' else 'Ожидает оплаты'}\n"
+                f"   💰 {order['amount_rub']} ₽ | "
+                f"{'Оплачен' if order['status'] == 'paid' else 'Ожидает'}\n"
                 f"   📅 {order['created_at'][:16]}\n\n"
             )
 
     await callback.message.edit_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=back_keyboard()
+        reply_markup=back_keyboard(),
     )
     await callback.answer()
 
@@ -240,151 +223,179 @@ async def buy_product(callback: CallbackQuery):
         await callback.answer("❌ Товар не найден", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        get_confirm_text(product_key),
-        parse_mode=ParseMode.HTML,
-        reply_markup=confirm_keyboard(product_key)
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("pay_"))
-async def process_payment(callback: CallbackQuery, bot: Bot):
-    product_key = callback.data.replace("pay_", "")
-    product = get_product_info(product_key)
-
-    if not product:
-        await callback.answer("❌ Товар не найден", show_alert=True)
-        return
+    # Генерируем уникальную метку
+    label = generate_payment_label()
 
     # Создаём заказ в БД
     order_id = await create_order(
-        callback.from_user.id,
-        product["type"],
-        product_key,
-        product["price"]
+        user_id=callback.from_user.id,
+        product_type=product["type"],
+        product_key=product_key,
+        amount_rub=product["price"],
+        payment_label=label,
     )
 
-    # Формируем инвойс
-    title = product["label"]
-    description = (
-        f"Заказ #{order_id}\n"
-        f"{'Подписка Telegram Premium на ' + str(product.get('months', '')) + ' мес.' if product['type'] == 'premium' else str(product.get('amount', '')) + ' Telegram Stars'}"
+    # Сохраняем в память
+    pending_payments[order_id] = {
+        "label": label,
+        "product_key": product_key,
+        "user_id": callback.from_user.id,
+    }
+
+    # Создаём ссылку на оплату
+    payment_url = create_payment_url(
+        amount=product["price"],
+        label=label,
+        product_name=f"Заказ #{order_id} — {product['label']}",
     )
 
-    prices = [
-        LabeledPrice(label=product["label"], amount=product["price"])
-    ]
+    if product["type"] == "premium":
+        desc = f"👑 {product['label']}\n⏱ Период: {product['months']} мес."
+    else:
+        desc = f"⭐ {product['label']}\n🌟 Количество: {product['amount']} Stars"
 
-    await callback.message.delete()
+    text = f"""
+🛒 <b>Заказ #{order_id}</b>
 
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=title,
-        description=description,
-        payload=f"order_{order_id}_{product_key}",
-        provider_token=PAYMENT_PROVIDER_TOKEN,
-        currency="RUB",
-        prices=prices,
-        start_parameter=f"buy_{product_key}",
-        photo_url="https://i.imgur.com/TqFbMCY.png",
-        photo_width=800,
-        photo_height=450,
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-        is_flexible=False,
-        protect_content=True
+{desc}
+
+💰 <b>К оплате:</b> {product['display']}
+<s>Старая цена: {product['old_price']}</s>
+🔥 <b>Вы экономите {int(int(product['old_price'].replace(' ', '').replace('₽', '').replace(',', '')) - product['price'])} ₽!</b>
+
+━━━━━━━━━━━━━━━━━━━
+📌 <b>Инструкция:</b>
+1. Нажмите «💳 Оплатить»
+2. Оплатите на странице ЮMoney
+3. Вернитесь сюда и нажмите «🔄 Проверить оплату»
+━━━━━━━━━━━━━━━━━━━
+
+⚠️ Ссылка действительна 30 минут.
+"""
+
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=payment_keyboard(payment_url, order_id),
     )
     await callback.answer()
 
 
-# ==================== ОБРАБОТКА ОПЛАТЫ ====================
+# ==================== ПРОВЕРКА ОПЛАТЫ ====================
 
-@router.pre_checkout_query()
-async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
-    """Подтверждаем готовность принять оплату"""
-    await pre_checkout_query.answer(ok=True)
+@router.callback_query(F.data.startswith("check_"))
+async def check_payment(callback: CallbackQuery, bot: Bot):
+    order_id = int(callback.data.replace("check_", ""))
 
-
-@router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
-async def successful_payment_handler(message: Message, bot: Bot):
-    """Обработка успешной оплаты"""
-    payment = message.successful_payment
-    payload = payment.invoice_payload
-
-    # Парсим payload
-    parts = payload.split("_", 2)
-    if len(parts) >= 2:
-        order_id = int(parts[1])
-        product_key = "_".join(parts[2:]) if len(parts) > 2 else ""
+    # Ищем в памяти или в БД
+    if order_id in pending_payments:
+        label = pending_payments[order_id]["label"]
+        product_key = pending_payments[order_id]["product_key"]
+        user_id = pending_payments[order_id]["user_id"]
     else:
-        order_id = 0
-        product_key = ""
+        # Пробуем из БД
+        from database import get_order_by_label as _  # уже импортирован
+        # Ищем по order_id
+        import aiosqlite
+        async with aiosqlite.connect("bot_database.db") as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM orders WHERE order_id = ?", (order_id,)
+            )
+            order = await cursor.fetchone()
 
-    # Обновляем заказ в БД
-    await complete_order(
-        order_id,
-        payment.telegram_payment_charge_id,
-        payment.provider_payment_charge_id
-    )
+        if not order:
+            await callback.answer("❌ Заказ не найден", show_alert=True)
+            return
 
-    product = get_product_info(product_key)
-    product_name = product["label"] if product else "Товар"
-    product_type = product["type"] if product else "unknown"
+        if order["status"] == "paid":
+            await callback.answer("✅ Этот заказ уже оплачен!", show_alert=True)
+            return
 
-    if product_type == "premium":
-        delivery_text = "👑 <b>Telegram Premium</b> будет активирован на вашем аккаунте"
-    else:
-        delivery_text = "⭐ <b>Telegram Stars</b> будут начислены на ваш аккаунт"
+        label = order["payment_label"]
+        product_key = order["product_key"]
+        user_id = order["user_id"]
 
-    success_text = f"""
-✅ <b>Оплата прошла успешно!</b>
+    # Проверяем оплату через API ЮMoney
+    is_paid = await check_payment_by_label(label)
+
+    if is_paid:
+        # Обновляем статус заказа
+        await complete_order(order_id)
+
+        # Удаляем из памяти
+        pending_payments.pop(order_id, None)
+
+        product = get_product_info(product_key)
+        product_name = product["label"] if product else "Товар"
+        product_type = product["type"] if product else "unknown"
+
+        if product_type == "premium":
+            delivery_text = (
+                "👑 <b>Telegram Premium</b> будет активирован на вашем аккаунте"
+            )
+        else:
+            delivery_text = (
+                "⭐ <b>Telegram Stars</b> будут начислены на ваш аккаунт"
+            )
+
+        success_text = f"""
+✅ <b>Оплата подтверждена!</b>
 
 🧾 <b>Заказ:</b> #{order_id}
 📦 <b>Товар:</b> {product_name}
-💰 <b>Сумма:</b> {payment.total_amount / 100:.0f} {payment.currency}
+💰 <b>Сумма:</b> {product['price']} ₽
+
+━━━━━━━━━━━━━━━━━━━
 
 {delivery_text} <b>в течение нескольких минут.</b>
 
-⏳ Пожалуйста, подождите. Обычно это занимает от 1 до 15 минут.
+⏳ Обычно это занимает от 1 до 15 минут.
 
-⚠️ <b>Если в течение 30 минут вы не получили товар,
-пожалуйста, напишите в поддержку:</b> {SUPPORT_USERNAME}
+⚠️ <b>Если в течение 30 минут вы не получили товар, 
+напишите в поддержку:</b> {SUPPORT_USERNAME}
 
-<i>Укажите номер заказа #{order_id}</i>
+📎 <i>Укажите номер заказа #{order_id}</i>
+
+━━━━━━━━━━━━━━━━━━━
 
 Спасибо за покупку! 💜
 """
 
-    await message.answer(
-        success_text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=after_payment_keyboard()
-    )
+        await callback.message.edit_text(
+            success_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=after_payment_keyboard(),
+        )
+        await callback.answer("✅ Оплата получена!", show_alert=True)
 
-    # Уведомляем админа
-    if ADMIN_ID:
-        admin_text = f"""
-🔔 <b>Новый заказ оплачен!</b>
+        # Уведомляем админа
+        if ADMIN_ID:
+            admin_text = f"""
+🔔 <b>Новая оплата!</b>
 
 🧾 <b>Заказ:</b> #{order_id}
-👤 <b>Покупатель:</b> {message.from_user.full_name} (@{message.from_user.username or 'нет username'})
-🆔 <b>ID:</b> <code>{message.from_user.id}</code>
+👤 <b>Покупатель:</b> {callback.from_user.full_name} \
+(@{callback.from_user.username or 'нет'})
+🆔 <b>ID:</b> <code>{callback.from_user.id}</code>
 📦 <b>Товар:</b> {product_name}
-💰 <b>Сумма:</b> {payment.total_amount / 100:.0f} {payment.currency}
-
-📎 <b>Telegram charge:</b> <code>{payment.telegram_payment_charge_id}</code>
-📎 <b>Provider charge:</b> <code>{payment.provider_payment_charge_id}</code>
+💰 <b>Сумма:</b> {product['price']} ₽
+🏷 <b>Label:</b> <code>{label}</code>
 """
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                admin_text,
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
+            try:
+                await bot.send_message(
+                    ADMIN_ID, admin_text, parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+    else:
+        await callback.answer(
+            "⏳ Оплата пока не найдена.\n\n"
+            "Если вы уже оплатили, подождите 1-2 минуты и попробуйте снова.\n"
+            "Иногда обработка платежа занимает некоторое время.",
+            show_alert=True,
+        )
 
 
 # ==================== АДМИН КОМАНДЫ ====================
@@ -395,6 +406,7 @@ async def cmd_stats(message: Message):
         return
 
     users_count, paid_orders, total_revenue = await get_stats()
+    balance = await get_balance()
 
     await message.answer(
         f"""
@@ -402,18 +414,25 @@ async def cmd_stats(message: Message):
 
 👥 <b>Пользователей:</b> {users_count}
 🧾 <b>Оплаченных заказов:</b> {paid_orders}
-💰 <b>Общая выручка:</b> {total_revenue / 100:.0f} ₽
+💰 <b>Общая выручка:</b> {total_revenue} ₽
+💳 <b>Баланс ЮMoney:</b> {balance}
 """,
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
     )
 
 
-@router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message):
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
 
     await message.answer(
-        "📢 Отправьте сообщение для рассылки (в ответ на это сообщение):",
-        parse_mode=ParseMode.HTML
+        """
+🔧 <b>Админ-панель</b>
+
+Доступные команды:
+/stats — Статистика
+/admin — Это меню
+""",
+        parse_mode=ParseMode.HTML,
     )
