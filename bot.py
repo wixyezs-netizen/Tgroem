@@ -19,14 +19,12 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
-
     dp.include_router(router)
 
     await bot.delete_webhook(drop_pending_updates=True)
 
-    logging.info("✅ Бот запущен!")
     print("=" * 50)
-    print("✅ Premium Shop Bot запущен и готов к работе!")
+    print("✅ Premium Shop Bot запущен!")
     print("=" * 50)
 
     await dp.start_polling(bot)
