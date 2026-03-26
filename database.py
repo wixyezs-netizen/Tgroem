@@ -43,7 +43,7 @@ async def create_order(user_id: int, product_type: str, product_key: str,
                        amount_rub: int, payment_label: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
-            INSERT INTO orders (user_id, product_type, product_key, amount_rub, 
+            INSERT INTO orders (user_id, product_type, product_key, amount_rub,
                                 status, payment_label, created_at)
             VALUES (?, ?, ?, ?, 'pending', ?, ?)
         """, (user_id, product_type, product_key, amount_rub,
@@ -61,30 +61,12 @@ async def complete_order(order_id: int):
         await db.commit()
 
 
-async def get_pending_orders():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("""
-            SELECT * FROM orders WHERE status = 'pending'
-            AND created_at > datetime('now', '-2 hours')
-        """)
-        return await cursor.fetchall()
-
-
-async def get_order_by_label(label: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM orders WHERE payment_label = ?", (label,)
-        )
-        return await cursor.fetchone()
-
-
 async def get_user_orders(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
-            SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 10
+            SELECT * FROM orders WHERE user_id = ?
+            ORDER BY created_at DESC LIMIT 10
         """, (user_id,))
         return await cursor.fetchall()
 
@@ -94,7 +76,9 @@ async def get_stats():
         cursor = await db.execute("SELECT COUNT(*) FROM users")
         users_count = (await cursor.fetchone())[0]
 
-        cursor = await db.execute("SELECT COUNT(*) FROM orders WHERE status = 'paid'")
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM orders WHERE status = 'paid'"
+        )
         paid_orders = (await cursor.fetchone())[0]
 
         cursor = await db.execute(
