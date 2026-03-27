@@ -24,7 +24,7 @@ async def create_payment(amount, product_name, user_id):
         "amount": str(amount),
         "comment": f"Покупка: {product_name}",
         "label": label,
-        "test_payment": "true"  # Для тестов (если нужно, можно убрать в продакшене)
+        "test_payment": "true"  # Для тестов (в продакшене удалить или установить false)
     }
 
     async with aiohttp.ClientSession() as session:
