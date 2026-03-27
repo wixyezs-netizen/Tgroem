@@ -1,5 +1,6 @@
 import sqlite3
 import datetime
+from config import PRODUCTS
 
 DB_NAME = "bot.db"
 
@@ -7,7 +8,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
     
-    # Платежи
     cur.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +21,6 @@ def init_db():
         )
     ''')
     
-    # Пользователи
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -32,7 +31,6 @@ def init_db():
         )
     ''')
     
-    # Товары (можно добавлять через админку)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS products (
             key TEXT PRIMARY KEY,
@@ -42,10 +40,8 @@ def init_db():
             type TEXT
         )
     ''')
-    # Заполним товарами по умолчанию, если таблица пуста
     cur.execute("SELECT COUNT(*) FROM products")
     if cur.fetchone()[0] == 0:
-        from config import PRODUCTS
         for key, product in PRODUCTS.items():
             cur.execute(
                 "INSERT INTO products (key, name, price, description, type) VALUES (?, ?, ?, ?, ?)",
@@ -55,7 +51,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Пользователи
 def get_or_create_user(user_id, username=None, first_name=None):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -71,7 +66,6 @@ def get_or_create_user(user_id, username=None, first_name=None):
     conn.close()
     return {"user_id": user[0], "username": user[1], "first_name": user[2], "balance": user[3]}
 
-# Платежи
 def add_payment(user_id, product_key, payment_id, amount):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -115,6 +109,18 @@ def get_pending_payments():
     conn.close()
     return [{"payment_id": r[0], "user_id": r[1], "product": r[2], "amount": r[3]} for r in rows]
 
+def get_pending_payment(user_id, product_key):
+    """Возвращает payment_id, если есть ожидающий платёж для данного пользователя и товара"""
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT payment_id FROM payments WHERE user_id = ? AND product = ? AND status = 'pending'",
+        (user_id, product_key)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 def mark_delivered(payment_id):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -143,3 +149,17 @@ def get_user_payments(user_id):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def get_payment_by_record_id(record_id):
+    """Получить платёж по числовому ID записи (для админки)"""
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT user_id, product, payment_id, amount, status FROM payments WHERE id = ?",
+        (record_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return {"user_id": row[0], "product": row[1], "payment_id": row[2], "amount": row[3], "status": row[4]}
+    return None
