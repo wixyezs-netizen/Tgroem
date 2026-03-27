@@ -2,13 +2,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import logging
 from config import PRODUCTS, ADMIN_ID
-from database import add_payment, update_payment_status, get_pending_payment, get_payment, get_or_create_user
+from database import (
+    add_payment, update_payment_status, get_pending_payment,
+    get_payment, get_or_create_user, mark_delivered
+)
 from yoomoney import create_payment, check_payment
-from admin import is_admin  # проверка админа
+from delivery import deliver_premium, deliver_stars, deliver_nft
 
 logger = logging.getLogger(__name__)
 
-# Состояния
 SELECTING_PRODUCT, CONFIRMING, WAITING_PAYMENT = range(3)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,7 +81,6 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     product_name = context.user_data["product_name"]
     price = context.user_data["price"]
 
-    # Проверяем, нет ли уже ожидающего платежа за этот товар
     existing = get_pending_payment(user_id, product_key)
     if existing:
         await query.edit_message_text(
@@ -88,7 +89,6 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return WAITING_PAYMENT
 
-    # Создаём платёж
     payment_id, confirmation_url = await create_payment(price, product_name, user_id)
     if not confirmation_url:
         await query.edit_message_text(
@@ -96,9 +96,7 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    # Сохраняем в БД
     add_payment(user_id, product_key, payment_id, price)
-
     context.user_data["payment_id"] = payment_id
 
     pay_message = (
@@ -143,16 +141,12 @@ async def check_payment_callback(update: Update, context: ContextTypes.DEFAULT_T
         return WAITING_PAYMENT
 
 async def deliver_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_key: str, payment_id: str):
-    """Выдача товара после успешной оплаты"""
-    from database import mark_delivered
-    from delivery import deliver_premium, deliver_stars, deliver_nft  # отдельные функции доставки
     user = update.effective_user
     product = PRODUCTS.get(product_key)
     if not product:
         await update.callback_query.edit_message_text("Товар не найден, но оплата прошла. Обратитесь к администратору.")
         return
 
-    # Вызываем соответствующую функцию доставки
     success = False
     message = ""
     try:
@@ -172,11 +166,9 @@ async def deliver_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pr
         mark_delivered(payment_id)
         await update.callback_query.edit_message_text(f"✅ {message}\nСпасибо за покупку!")
     else:
-        # Если не удалось выдать, сообщаем админу и пользователю
         await update.callback_query.edit_message_text(
             f"⚠️ {message}\nМы уведомили администратора. Ваш платёж зафиксирован, товар будет выдан вручную."
         )
-        # Уведомление админу
         if context.bot:
             await context.bot.send_message(
                 ADMIN_ID,
