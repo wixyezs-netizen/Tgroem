@@ -24,7 +24,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 # ==================== КОНФИГУРАЦИЯ ====================
-BOT_TOKEN = "8633048902:AAEBTjJtA-SBUSZI8WrKhcFajMA49XpOEVk"
+BOT_TOKEN = "8716804712:AAEm2pQ_c-TX9dBxtggCY-kSrTuYLv29ed4"
 ADMIN_IDS = [8681521200]  # Список админов
 
 YOOMONEY_WALLET = "4100118889570559"
