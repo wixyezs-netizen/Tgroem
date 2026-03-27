@@ -1,6 +1,8 @@
+import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from database import get_all_payments, get_payment, update_payment_status, mark_delivered
+from database import get_all_payments, get_payment_by_record_id, update_payment_status, mark_delivered
+from delivery import deliver_premium, deliver_stars, deliver_nft
 from config import ADMIN_ID
 
 def is_admin(user_id):
@@ -36,20 +38,14 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for p in payments:
             # p: id, user_id, product, payment_id, amount, status, created_at, delivered
             text += f"ID: {p[0]} | Пользователь: {p[1]} | {p[2]} | {p[4]} руб. | {p[5]} | {p[6]}\n"
-        # Если много, можно разбить на страницы, но для простоты так
         await query.edit_message_text(text, parse_mode="Markdown")
     elif data == "admin_manual":
-        # Предложим ввести ID платежа для ручной выдачи
         context.user_data["admin_action"] = "manual_delivery"
         await query.edit_message_text(
             "Введите ID платежа (число), который нужно выдать вручную.\n"
             "Или /cancel для отмены."
         )
-        # Переключаем состояние (можно через ConversationHandler, но для простоты используем callback)
-        # Пользователь введёт число, и мы обработаем в отдельном обработчике сообщений
     elif data == "admin_stats":
-        # Простая статистика
-        from database import get_all_payments
         all_p = get_all_payments(limit=1000)
         total = len(all_p)
         success = sum(1 for p in all_p if p[5] == "success")
@@ -60,7 +56,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Неизвестная команда.")
 
 async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает ввод ID платежа для ручной выдачи"""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return
@@ -68,46 +63,33 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     try:
-        payment_id_int = int(update.message.text)
+        record_id = int(update.message.text)
     except ValueError:
         await update.message.reply_text("Некорректный ID. Введите число.")
         return
 
-    # Получаем платеж по ID (не payment_id, а id в таблице)
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, product, payment_id, status FROM payments WHERE id = ?", (payment_id_int,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
+    payment = get_payment_by_record_id(record_id)
+    if not payment:
         await update.message.reply_text("Платёж не найден.")
         return
-    user_id_db, product_key, payment_id, status = row
-    if status == "success":
+
+    if payment["status"] == "success":
         await update.message.reply_text("Этот платёж уже успешно обработан.")
     else:
-        # Выдаём товар
-        from delivery import deliver_premium, deliver_stars, deliver_nft
-        # Вызываем соответствующую функцию
-        if product_key == "premium":
-            success, msg = await deliver_premium(user_id_db)
-        elif product_key == "stars":
-            # нужно узнать сумму из базы
-            cur = conn.cursor()
-            cur.execute("SELECT amount FROM payments WHERE id = ?", (payment_id_int,))
-            amount = cur.fetchone()[0]
-            success, msg = await deliver_stars(user_id_db, amount)
-        elif product_key == "nft":
-            success, msg = await deliver_nft(user_id_db)
+        if payment["product"] == "premium":
+            success, msg = await deliver_premium(payment["user_id"])
+        elif payment["product"] == "stars":
+            success, msg = await deliver_stars(payment["user_id"], payment["amount"])
+        elif payment["product"] == "nft":
+            success, msg = await deliver_nft(payment["user_id"])
         else:
             success, msg = False, "Неизвестный товар"
         if success:
-            update_payment_status(payment_id, "success")
-            mark_delivered(payment_id)
+            update_payment_status(payment["payment_id"], "success")
+            mark_delivered(payment["payment_id"])
             await update.message.reply_text(f"✅ Товар выдан. Сообщение: {msg}")
-            # Уведомить пользователя
             try:
-                await context.bot.send_message(user_id_db, f"Администратор выдал вам товар: {msg}")
+                await context.bot.send_message(payment["user_id"], f"Администратор выдал вам товар: {msg}")
             except:
                 pass
         else:
