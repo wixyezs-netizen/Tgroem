@@ -2,17 +2,18 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import logging
 from config import PRODUCTS, ADMIN_ID
-from database import add_payment, update_payment_status, get_pending_payment, get_payment
+from database import add_payment, update_payment_status, get_pending_payment, get_payment, get_or_create_user
 from yoomoney import create_payment, check_payment
+from admin import is_admin  # проверка админа
 
 logger = logging.getLogger(__name__)
 
-# Состояния для ConversationHandler
+# Состояния
 SELECTING_PRODUCT, CONFIRMING, WAITING_PAYMENT = range(3)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /start"""
     user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
     await update.message.reply_text(
         f"Привет, {user.first_name}!\n"
         "Я бот для покупки Telegram Premium, звёзд и NFT.\n"
@@ -22,7 +23,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SELECTING_PRODUCT
 
 def get_products_keyboard():
-    """Клавиатура с товарами"""
     keyboard = []
     for key, product in PRODUCTS.items():
         keyboard.append([InlineKeyboardButton(
@@ -33,7 +33,6 @@ def get_products_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора товара"""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -65,7 +64,6 @@ async def product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CONFIRMING
 
 async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение покупки и создание платежа"""
     query = update.callback_query
     await query.answer()
 
@@ -101,10 +99,8 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем в БД
     add_payment(user_id, product_key, payment_id, price)
 
-    # Сохраняем payment_id в контексте для проверки
     context.user_data["payment_id"] = payment_id
 
-    # Отправляем ссылку на оплату
     pay_message = (
         f"💳 Оплатите {price} руб. на кошелёк ЮMoney.\n\n"
         f"🔗 Ссылка для оплаты:\n{confirmation_url}\n\n"
@@ -115,7 +111,6 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_PAYMENT
 
 async def check_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса платежа"""
     query = update.callback_query
     await query.answer()
 
@@ -124,7 +119,6 @@ async def check_payment_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("Не найден идентификатор платежа. Попробуйте заново /start")
         return ConversationHandler.END
 
-    # Получаем информацию о платеже из БД
     payment_info = get_payment(payment_id)
     if not payment_info:
         await query.edit_message_text("Платёж не найден.")
@@ -134,13 +128,10 @@ async def check_payment_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("Этот платёж уже был успешно обработан.")
         return ConversationHandler.END
 
-    # Проверяем через API ЮMoney
     success = await check_payment(payment_id)
     if success:
-        # Обновляем статус
         update_payment_status(payment_id, "success")
-        # Выдаём товар
-        await deliver_product(update, context, payment_info["product"])
+        await deliver_product(update, context, payment_info["product"], payment_id)
         return ConversationHandler.END
     else:
         await query.edit_message_text(
@@ -151,42 +142,71 @@ async def check_payment_callback(update: Update, context: ContextTypes.DEFAULT_T
         )
         return WAITING_PAYMENT
 
-async def deliver_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_key: str):
+async def deliver_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_key: str, payment_id: str):
     """Выдача товара после успешной оплаты"""
+    from database import mark_delivered
+    from delivery import deliver_premium, deliver_stars, deliver_nft  # отдельные функции доставки
+    user = update.effective_user
     product = PRODUCTS.get(product_key)
     if not product:
         await update.callback_query.edit_message_text("Товар не найден, но оплата прошла. Обратитесь к администратору.")
         return
 
-    user_id = update.effective_user.id
-    # Здесь можно реализовать реальную активацию (например, через Telegram API)
-    # Для демонстрации просто шлём сообщение с инструкцией
-    if product_key == "premium":
-        text = (
-            "🎉 Поздравляем! Вы приобрели Telegram Premium на 1 месяц.\n"
-            "Для активации перейдите по ссылке и следуйте инструкциям:\n"
-            "https://t.me/premium?start=your_code_here\n\n"
-            "Если возникли проблемы, свяжитесь с @support"
-        )
-    elif product_key == "stars":
-        text = (
-            "✨ Вы получили 100 Telegram Stars!\n"
-            "Звёзды будут зачислены на ваш аккаунт в течение 5 минут.\n"
-            "Спасибо за покупку!"
-        )
-    elif product_key == "nft":
-        text = (
-            "🎨 Ваше эксклюзивное NFT отправлено на ваш кошелёк!\n"
-            "Адрес: 0x...\n"
-            "Ссылка на просмотр: https://opensea.io/...\n"
-            "Сохраните этот токен как подтверждение."
-        )
-    else:
-        text = "Товар успешно оплачен. Спасибо за покупку!"
+    # Вызываем соответствующую функцию доставки
+    success = False
+    message = ""
+    try:
+        if product_key == "premium":
+            success, message = await deliver_premium(user.id)
+        elif product_key == "stars":
+            success, message = await deliver_stars(user.id, product["price"])
+        elif product_key == "nft":
+            success, message = await deliver_nft(user.id)
+        else:
+            message = "Неизвестный тип товара."
+    except Exception as e:
+        logger.exception("Ошибка при выдаче товара")
+        message = f"Произошла ошибка при выдаче товара. Свяжитесь с администратором."
 
-    await update.callback_query.edit_message_text(text)
+    if success:
+        mark_delivered(payment_id)
+        await update.callback_query.edit_message_text(f"✅ {message}\nСпасибо за покупку!")
+    else:
+        # Если не удалось выдать, сообщаем админу и пользователю
+        await update.callback_query.edit_message_text(
+            f"⚠️ {message}\nМы уведомили администратора. Ваш платёж зафиксирован, товар будет выдан вручную."
+        )
+        # Уведомление админу
+        if context.bot:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"❗️ Не удалось выдать товар автоматически.\n"
+                f"Пользователь: {user.id}\nТовар: {product['name']}\nПлатёж: {payment_id}"
+            )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена диалога"""
     await update.message.reply_text("Действие отменено. Введите /start для выбора товара.")
     return ConversationHandler.END
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📖 *Справка*\n"
+        "/start - начать покупку\n"
+        "/history - история покупок\n"
+        "/help - эта справка\n"
+        "Если вы админ, используйте /admin для управления."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from database import get_user_payments
+    user_id = update.effective_user.id
+    payments = get_user_payments(user_id)
+    if not payments:
+        await update.message.reply_text("У вас пока нет покупок.")
+        return
+    text = "📜 *Ваши покупки:*\n"
+    for p in payments:
+        status_emoji = "✅" if p[3] == "success" else "⏳"
+        text += f"{status_emoji} {p[1]} - {p[2]} руб. ({p[4]})\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
