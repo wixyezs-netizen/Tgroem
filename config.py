@@ -8,7 +8,25 @@ YOOMONEY_ACCESS_TOKEN = "4100118889570559.3288B2E716CEEB922A26BD6BEAC58648FBFB68
 
 # Товары
 PRODUCTS = {
-    "premium": {"name": "Telegram Premium (1 месяц)", "price": 100, "description": "Активация премиум подписки на месяц."},
-    "stars": {"name": "⭐ 100 Звёзд", "price": 50, "description": "100 Telegram Stars на ваш аккаунт."},
-    "nft": {"name": "🎨 Эксклюзивное NFT", "price": 200, "description": "Уникальный NFT-токен от нашего проекта."}
+    "premium": {
+        "name": "Telegram Premium (1 месяц)",
+        "price": 100,
+        "description": "Активация премиум подписки на месяц.",
+        "type": "service"
+    },
+    "stars": {
+        "name": "⭐ 100 Звёзд",
+        "price": 50,
+        "description": "100 Telegram Stars на ваш аккаунт.",
+        "type": "currency"
+    },
+    "nft": {
+        "name": "🎨 Эксклюзивное NFT",
+        "price": 200,
+        "description": "Уникальный NFT-токен от нашего проекта.",
+        "type": "asset"
+    }
 }
+
+# Интервал проверки платежей (секунды)
+CHECK_INTERVAL = 5
