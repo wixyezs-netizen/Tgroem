@@ -39,7 +39,7 @@ CATEGORIES = {
         "products": {
             "premium_1m": {
                 "name": "Premium 1 месяц",
-                "price": 1,
+                "price": 159,
                 "description": "Telegram Premium подписка на 1 месяц.\n"
                                "• Уникальные стикеры и реакции\n"
                                "• Без рекламы\n"
